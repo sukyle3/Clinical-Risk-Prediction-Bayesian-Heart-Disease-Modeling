@@ -11,11 +11,11 @@ We model a binary outcome (`target`: heart disease *present* vs *absent*) using 
 - Standardized continuous variables: `age_z`, `thalach_z` (max heart rate), `oldpeak_z` (ST depression)
 - Categorical risk factors: `sex`, `cp` (chest pain type), `exang` (exercise-induced angina), `ca` (number of major vessels), `thal` (thallium stress test)
 
-The goal is to compare **four Bayesian prior specifications** and study their impact on:
+The goal is to compare four Bayesian prior specifications and study their impact on:
 
 - Posterior coefficient estimates and credible intervals  
 - Convergence diagnostics (Gelman–Rubin PSRF, traceplots, autocorrelation)  
-- Model fit by **Deviance Information Criterion (DIC)**   
+- Model fit by Deviance Information Criterion (DIC)  
 
 ---
 
@@ -29,10 +29,10 @@ The goal is to compare **four Bayesian prior specifications** and study their im
 
 - Variable selection:
   - Started with all 9 candidate predictors.  
-  - Fit a frequentist logistic regression and used **backward AIC selection**.  
+  - Fit a frequentist logistic regression and used backward AIC selection.  
   - Final feature set: `age_z`, `thalach_z`, `oldpeak_z`, `sex`, `cp`, `exang`, `ca`. 
 
-We also constructed age groups (5-year bands) to enable **hierarchical modeling over ordered age strata**, dropping the two youngest groups where all patients had disease (no variation). 
+We also constructed age groups (5-year bands) to enable hierarchical modeling over ordered age strata, dropping the two youngest groups where all patients had disease (no variation). 
 
 ---
 
