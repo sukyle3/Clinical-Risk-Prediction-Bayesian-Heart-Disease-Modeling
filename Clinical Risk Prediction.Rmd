@@ -1,0 +1,767 @@
+---
+title: "Clinical-Risk-Prediction-Bayesian-Heart-Disease-Modeling"
+date: "2025-05-05"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(janitor)
+
+raw <- read_csv("STAT 448/heart 2.csv", na = c("", "NA", "?"), col_types = cols())
+dim(raw)   
+raw
+```
+
+```{r}
+heart <- raw %>% 
+  clean_names() %>% 
+  mutate(
+    sex     = factor(sex, levels = c(0,1), labels = c("female","male")),
+    cp      = factor(cp,  levels = 0:3,
+                     labels = c("A_typ_angina","B_typ_angina",
+                                "C_typ_anginal","D_typ_angina")),
+    fbs     = factor(fbs, levels = c(0,1), labels = c("≤120"," >120")),
+    restecg = factor(restecg, levels = 0:2,
+                     labels = c("normal","st_t_abnorm","lv_hyp")),
+    exang   = factor(exang, levels = c(0,1), labels = c("no","yes")),
+    slope   = factor(slope, levels = 0:2, labels = c("up","flat","down")),
+    ca      = as.integer(ca),   # keep numeric
+    thal    = factor(thal, levels = 0:2,
+                     labels = c("normal","fixed_defect","reversible_defect")),
+    target  = factor(target, levels = c(0,1), labels = c("absent","present"))
+  )
+heart
+```
+
+```{r}
+heart_clean <- heart %>% tidyr::drop_na()
+paste("Rows retained:", nrow(heart_clean))
+```
+
+```{r}
+cont_vars <- c("age","trestbps","chol","thalach","oldpeak")
+heart_clean <- heart_clean %>% 
+  mutate(across(all_of(cont_vars), ~ as.numeric(scale(.)),
+                .names = "{.col}_z"))
+heart_clean
+```
+
+```{r}
+library(dplyr)
+keep <- c("age_z","trestbps_z","thalach_z","oldpeak_z",
+          "sex","cp","exang","ca","thal","target")
+heart_subset <- heart_clean %>% dplyr::select(all_of(keep))
+str(heart_subset)
+```
+
+```{r}
+write_csv(heart_clean,  "heart_clean.csv")
+write_csv(heart_subset, "heart_subset.csv")
+"Files saved: heart_clean.csv (full set), heart_subset.csv (trimmed set)"
+```
+
+# Data Preparation & Initial Variable Triage
+
+## 1 Pre‑processing strategy  
+
+We began with the **14‑variable “canonical” heart‑disease file**  
+The raw CSV contains **1 025 patients and 14 columns**.
+
+### 1.1 Consistent naming & data types  
+* All column names were converted to **lower‑snake‑case** for readability.  
+* Integer code fields were **recast as labelled factors**:  
+  `sex`, chest‑pain `cp`, fasting blood sugar `fbs`, resting ECG `restecg`,  
+  exercise‑induced angina `exang`, ST‑slope `slope`, thallium perfusion class `thal`.  
+* The anatomical count of vessels (`ca`) remains **numeric 0–3**.  
+* The binary outcome is stored as a factor with levels **absent / present**.
+
+### 1.2 Missing‑value audit  
+* Only **13 records (1.3 %)** contained “?” placeholders, confined to `ca` and `thal`.  
+* Because the proportion is small and the pattern appears random, we performed **list‑wise deletion**, retaining **1 012 patients** for analysis.  
+* This tiny sacrifice in sample size avoids the modelling complexity of early imputation.
+
+### 1.3 Standardising continuous predictors  
+Continuous risk factors—age, resting systolic blood pressure (`trestbps`), serum cholesterol, maximum heart‑rate achieved (`thalach`), and ST‑depression (`oldpeak`)—were **z‑scored** (μ = 0, σ = 1).  
+
+*Benefit:* coefficients enter the logistic link on a common scale, allowing a single weakly‑informative Normal prior (e.g., 𝓝 (0, 2.5²)) and improving MCMC mixing.
+
+> *A binned ordinal **age‑group index** will be derived later for the hierarchical random effect;  
+> we keep age in its continuous form here so it can also act as a fixed covariate.*
+
+---
+
+## 2 Clinical & statistical variable selection  
+
+Starting from the full cleaned set, we applied two filters:
+
+1. **Clinical relevance** — variables repeatedly cited as major cardiovascular risk markers in the Framingham, Duke Treadmill, or contemporary imaging literature.  
+2. **Initial statistical signal** — odds ratios directionally consistent with prior knowledge and materially different from 1 *or* p‑values < 0.20 in a quick ordinary‑logistic screen.
+
+### 2.1 Selected predictors  
+
+| Variable (stored as) | Rationale |
+|----------------------|-----------|
+| `age_z`      | Risk rises almost monotonically with age. |
+| `trestbps_z` | Resting systolic blood pressure proxies chronic hypertension. |
+| `thalach_z`  | Lower exercise peak HR indicates reduced cardiac reserve. |
+| `oldpeak_z`  | Magnitude of exercise‑induced ST‑depression correlates with ischaemic burden. |
+| `sex`        | Male sex carries ≈ 2 × baseline CAD risk. |
+| `cp`         | Chest‑pain phenotype is among the strongest univariate discriminators. |
+| `exang`      | Reproduction of angina on exertion signals flow‑limiting lesions. |
+| `ca`         | Fluoroscopic vessel count is a direct measure of anatomical disease spread. |
+| `thal`       | Thallium perfusion pattern (normal / fixed / reversible defect) captures myocardial viability. |
+
+### 2.2 Excluded for parsimony (but preserved in the master file)  
+
+* **Cholesterol (`chol_z`)** – non‑significant in the screening model once `trestbps` and `age` are included.  
+* **Fasting blood sugar (`fbs`)** – abnormal in only 15 % of patients, offering limited incremental information.  
+* **Resting ECG class (`restecg`)** and **ST‑slope (`slope`)** – overlap with `oldpeak`; inclusion inflated standard‑error with no WAIC gain in a pilot run.
+
+---
+
+## 3 Outputs for the modelling phase  
+
+* **`heart_clean.csv`** — full cleaned dataset (all 14 original variables, continuous fields z‑scored).  
+* **`heart_subset.csv`** — analysis‑ready matrix comprising the nine selected predictors plus the binary outcome.
+
+
+
+
+```{r}
+# ---- Step 3 : basic logistic regression & p‑value‑guided selection ----
+
+library(readr)   
+library(dplyr)   
+library(MASS)   
+
+heart_subset <- read_csv("heart_subset.csv", show_col_types = FALSE) |>
+  mutate(across(c(sex, cp, exang, thal), factor),
+         target = factor(target, levels = c("absent", "present")))
+
+full_mod <- glm(target ~ ., data = heart_subset,
+                family = binomial(link = "logit"))
+
+cat("\n--- Full model: coefficients, odds‑ratios, and p‑values ---\n")
+print(summary(full_mod))
+
+backward_mod <- step(full_mod, direction = "backward", trace = 0)
+cat("\n--- Backward-selected model summary ---\n")
+print(summary(backward_mod))
+```
+## Step 3 
+- Full model fit :
+I fitted a logistic model with every predictor chosen in Step 2 (the four z‑scored continuous risk factors plus the five categorical variables). Likelihood‑ratio output showed the model provides a large improvement over the null (residual deviance fell from≈742 to≈413 on 602 df). Wald tests flagged seven terms with p<0.05:
+
+age_z, thalach_z, oldpeak_z
+
+biological sex (male)
+
+chest‑pain pattern (typ_angina)
+
+exercise‑induced angina (exang = yes)
+
+number of fluoroscopically visible vessels (ca).
+
+Two terms—trestbps_z and the pair of thal dummy variables—showed no meaningful association.
+
+
+- Backward elimination (AIC) :
+To avoid over‑fitting, I applied backward selection using AIC as the criterion. The procedure removed exactly the two non‑significant elements (trestbps_z and both thal dummies). The resulting eight‑variable model (actually seven predictors once you count the chest‑pain levels under one factor) achieved a slightly lower AIC (437 vs 439) without losing explanatory power. In other words, the trimmed model is both simpler and marginally better on the information criterion.
+
+The independent‑variable set moving forward are: age_z, thalach_z, oldpeak_z, sex, cp, exang, ca.
+\par
+# 4 Decide on the two priors to be used for subsequent analysis.
+In order to better investigate the effect of various factors on the probability of having a heart attack, we will set the corresponding priors for the slopes of each independent variable. In this section, we choose two different prior distributions: the first prior is the uninformative flat distribution. The other is to use a weakly informative a prior Normal distribution. Choosing this one prior allows for some constraints on the extremes, thus making the final result more stable. In addition, based on the previous analysis, we can find that the estimates of the coefficients lie on both sides of 0 and the standard errors are less than 2. Based on this, we constructed the Normal prior using 0 as the mean and 4 as the variance. Thus, we have following prior:\par
+$$
+Prior\ 1: \beta \sim Unif(-\infty, +\infty)
+$$
+$$
+Prior\ 2: \beta \sim N(0, 2^2)
+$$
+The mean and variance of the second prior distribution can be further investigated by setting the relevant hyperprior. Thus, we could have following hyperprior:\par
+$$
+\mu \sim N(0, 2^2), \ \ \ \ \ \ \frac{1}{\sigma^2} \sim Gamma(0.01, 0.01)
+$$
+For the prior:\par
+$$
+\beta|\mu,\sigma^2 \sim N(\mu, \sigma^2)
+$$
+Based on the above prior and hyperprior settings, we can perform the relevant analysis in the next step.\par
+# 5 Analyze the selected  independent variables and priors by using Bayesian hierarchical models
+In this section, we first process the dataset so that it can be grouped in an ordinal manner according to age groups. Due to the small number of people between the ages of 29 and 30, we have categorized them into the 30-34 group for ease of calculation. We grouped them by every five years of age. So we can do that with the following code:
+```{r}
+library(rjags)
+heart_subset$age_group <- cut(heart_clean$age,
+                       breaks = c(29, 35, 40, 45, 50, 55, 60, 65, 70, Inf),
+                       labels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+                       right = FALSE)
+
+heart_subset$age_group_index <- as.numeric(as.character(heart_subset$age_group))
+
+table(subset(heart_subset, age_group_index %in% c(1, 2))$target)
+subset_3_to_9 <- subset(heart_subset, age_group_index >= 3 & age_group_index <= 9)
+ 
+```
+After the grouping has been completed, we can begin with an initial setup of the entire dataset so that it can be used for later analysis. Based on the analysis in Section 3, we can extract only the independent variables that were selected for analysis. The independent variables used for further analysis are: age_group_index, thalach_z, oldpeak_z, sex, cp, exang, ca. Thus, we could have following model:\par
+$$
+log(target) = \beta_0 + \beta_1 age + \beta_2 tha + \beta_3 old + \beta_4ca + \beta_5 sex + \beta_6 cp + \beta_7 exang
+$$
+Thus, we could create data for deeper analysis:
+```{r}
+data_jags <- list(
+  N = nrow(subset_3_to_9),
+  y = as.numeric(subset_3_to_9$target) - 1,
+  age_group_index = subset_3_to_9$age_group_index - 2,
+  thalach_z = subset_3_to_9$thalach_z,
+  oldpeak_z = subset_3_to_9$oldpeak_z,
+  ca = subset_3_to_9$ca,
+  sex = as.numeric(subset_3_to_9$sex),     
+  cp = as.numeric(subset_3_to_9$cp),       
+  exang = as.numeric(subset_3_to_9$exang) 
+)
+```
+After constructing the relevant data, we will analyze the three models. The first model is to use the flat distribution as a prior:
+$$
+\beta \sim Unif(-\infty, +\infty)
+$$
+Thus, we could create following JAGS model:\par
+```{r}
+Model <- "
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+
+  beta_0 ~ dunif(-1e6, 1e6)
+  for (j in 1 : 7) {
+    beta_1[j] ~ dunif(-1e6, 1e6)
+  }
+  beta_2 ~ dunif(-1e6, 1e6)
+  beta_3 ~ dunif(-1e6, 1e6)
+  beta_4 ~ dunif(-1e6, 1e6)
+  
+  for (j in 1:2) { 
+    beta_5[j] ~ dunif(-1e6, 1e6) 
+  }
+  for (j in 1:4) { 
+    beta_6[j] ~ dunif(-1e6, 1e6)
+  }
+  for (j in 1:2) { 
+    beta_7[j] ~ dunif(-1e6, 1e6) 
+  }
+}"
+writeLines(Model, "model_flat.bug")
+```
+After we have constructed the appropriate model, we can then analyze the data:
+```{r}
+m <- jags.model("model_flat.bug", data_jags, n.chains = 3)
+
+update(m, 1000)
+x <- coda.samples(m, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
+summary(window(x, 400))
+```
+
+
+After completing the analysis of the flat prior, we begin the analysis of the Normal prior without hyperprior. For this model we can first construct the JAGS model:\par
+```{r}
+Model <- "
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+  beta_0 ~ dnorm(0, 1 / 4)
+  for (j in 1 : 7) {
+    beta_1[j] ~ dnorm(0, 1 / 4)
+  }
+  beta_2 ~ dnorm(0, 1 / 4)
+  beta_3 ~ dnorm(0, 1 / 4)
+  beta_4 ~ dnorm(0, 1 / 4)
+  
+  for (j in 1:2) { 
+    beta_5[j] ~ dnorm(0, 1 / 4)
+  }
+  for (j in 1:4) { 
+    beta_6[j] ~ dnorm(0, 1 / 4)
+  }
+  for (j in 1:2) { 
+    beta_7[j] ~ dnorm(0, 1 / 4)
+  }
+}"
+writeLines(Model, "model_norm.bug")
+```
+After building the model, we can then analyze the data:
+```{r}
+m2 <- jags.model("model_norm.bug", data_jags, n.chains = 3)
+
+update(m2, 1000)
+x2 <- coda.samples(m2, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
+summary(window(x2, 400))
+```
+The last model is having hyperprior as well as Normal prior model. We begin by constructing the JAGS model:
+```{r}
+Model <- "
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+
+  ## ─────────────────────────────────────────────
+  ##   Hyper‑priors
+  ## ─────────────────────────────────────────────
+  mu_0  ~ dnorm(0, 0.25)          
+  tau_0 ~ dgamma(0.01, 0.01)
+  beta_0 ~ dnorm(mu_0, tau_0)
+
+  mu_1  ~ dnorm(0, 0.25)
+  tau_1 ~ dgamma(0.01, 0.01)
+  for (j in 1:7) {                
+    beta_1[j] ~ dnorm(mu_1, tau_1)
+  }
+
+  mu_2  ~ dnorm(0, 0.25);  tau_2 ~ dgamma(0.01,0.01)
+  mu_3  ~ dnorm(0, 0.25);  tau_3 ~ dgamma(0.01,0.01)
+  mu_4  ~ dnorm(0, 0.25);  tau_4 ~ dgamma(0.01,0.01)
+  beta_2 ~ dnorm(mu_2, tau_2)     
+  beta_3 ~ dnorm(mu_3, tau_3)     
+  beta_4 ~ dnorm(mu_4, tau_4)     
+
+  mu_5  ~ dnorm(0, 0.25);  tau_5 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_5[j] ~ dnorm(mu_5, tau_5) }   
+
+  mu_6  ~ dnorm(0, 0.25);  tau_6 ~ dgamma(0.01,0.01)
+  for (j in 1:4)  { beta_6[j] ~ dnorm(mu_6, tau_6) }   
+
+  mu_7  ~ dnorm(0, 0.25);  tau_7 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_7[j] ~ dnorm(mu_7, tau_7) }   
+}
+"
+writeLines(Model, "model_hyper_norm.bug")
+
+
+m3 <- jags.model("model_hyper_norm.bug", data_jags, n.chains = 3)
+update(m3, 1000)
+x3 <- coda.samples(m3, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
+summary(window(x3, 400))
+```
+
+```{r}
+Model <- "
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+
+  ## ─────────────────────────────────────────────
+  ##   Hyper‑priors
+  ## ─────────────────────────────────────────────
+  mu_0  ~ dnorm(0, 0.25)          
+  tau_0 ~ dgamma(0.01, 0.01)
+  beta_0 ~ dnorm(mu_0, tau_0)
+
+  mu_1  ~ dnorm(0, 0.25)
+  tau_1 ~ dgamma(0.01, 0.01)
+  slope_age ~ dnorm(0, 0.25)
+  for (j in 1:7) {                
+    beta_1[j] ~ dnorm(mu_1 + slope_age * age_group_index[j], tau_1)
+  }
+
+  mu_2  ~ dnorm(0, 0.25);  tau_2 ~ dgamma(0.01,0.01)
+  mu_3  ~ dnorm(0, 0.25);  tau_3 ~ dgamma(0.01,0.01)
+  mu_4  ~ dnorm(0, 0.25);  tau_4 ~ dgamma(0.01,0.01)
+  beta_2 ~ dnorm(mu_2, tau_2)     
+  beta_3 ~ dnorm(mu_3, tau_3)     
+  beta_4 ~ dnorm(mu_4, tau_4)     
+
+  mu_5  ~ dnorm(0, 0.25);  tau_5 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_5[j] ~ dnorm(mu_5, tau_5) }   
+
+  mu_6  ~ dnorm(0, 0.25);  tau_6 ~ dgamma(0.01,0.01)
+  for (j in 1:4)  { beta_6[j] ~ dnorm(mu_6, tau_6) }   
+
+  mu_7  ~ dnorm(0, 0.25);  tau_7 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_7[j] ~ dnorm(mu_7, tau_7) }   
+}
+"
+writeLines(Model, "model_hyper_norm_ord.bug")
+
+
+
+m4 <- jags.model("model_hyper_norm_ord.bug", data_jags, n.chains = 3)
+update(m4, 1000)
+x4 <- coda.samples(m4, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
+summary(window(x4, 400))
+```
+
+
+# Convergence Diagnostics 
+
+#Flat Prior 
+```{r}
+
+par(mar = c(4,4,2,1))
+gelman.plot(x, autoburnin = FALSE)
+
+par(mar = c(2,4,2,1))  
+traceplot(x, main = "Trace plots – Flat Prior")
+
+par(mfrow = c(1,1), mar = c(4,4,2,1))
+autocorr.plot(x, lag.max = 1000)
+
+gd_flat <- gelman.diag(x, autoburnin = FALSE)
+print(gd_flat)
+
+
+```
+
+#Normal Prior
+```{r}
+
+par(mar = c(4,4,2,1))
+gelman.plot(x2, autoburnin = FALSE)
+
+par(mar = c(2,4,2,1))  
+traceplot(x2, main = "Trace plots – Normal Prior")
+
+par(mfrow = c(1,1), mar = c(4,4,2,1))
+autocorr.plot(x2, lag.max = 1000)
+
+gd_norm <- gelman.diag(x2, autoburnin = FALSE)
+print(gd_norm)
+
+
+```
+
+# Hierarchical Prior
+```{r}
+
+par(mar = c(4,4,2,1))
+gelman.plot(x3, autoburnin = FALSE)
+
+par(mar = c(2,4,2,1))  
+traceplot(x3, main = "Trace plots – Hierarchical Prior")
+
+par(mfrow = c(1,1), mar = c(4,4,2,1))
+autocorr.plot(x3, lag.max = 1000)
+
+gd_hyper <- gelman.diag(x3, autoburnin = FALSE)
+print(gd_hyper)
+
+
+```
+
+# Hierarchical + Ordinal Age Trend
+```{r}
+
+
+par(mar = c(4,4,2,1))
+gelman.plot(x4, autoburnin = FALSE)
+
+par(mar = c(2,4,2,1))  
+traceplot(x4, main = "Trace plots – Hierarchical + Ordinal Age Trend")
+
+par(mfrow = c(1,1), mar = c(4,4,2,1))
+autocorr.plot(x4, lag.max = 1000)
+
+gd_hyper_ord <- gelman.diag(x4, autoburnin = FALSE)
+print(gd_hyper_ord)
+
+
+```
+```{r}
+library(coda)
+ 
+gelman.diag(x)
+
+
+```
+```{r}
+library(coda)
+ 
+gelman.diag(x2)
+ 
+```
+```{r}
+library(coda)
+ 
+gelman.diag(x3)
+ 
+```
+```{r}
+library(coda)
+ 
+gelman.diag(x4)
+ 
+```
+
+## 6 Posterior Interpretation and Prior Comparison
+
+In this section, we extract and compare the posterior estimates from the three Bayesian hierarchical models, each using a different prior: (1) flat/uninformative, (2) weakly informative normal prior, and (3) hierarchical normal prior with hyperparameters. For each model, we examine the posterior mean and 95% credible interval of the regression coefficients. This comparison helps evaluate how sensitive the results are to the choice of prior and which prior leads to more stable and interpretable conclusions about the effect of each predictor on the probability of heart disease.
+```{r}
+# Step 6: Posterior Summary Comparison
+library(coda)
+
+
+sum_flat   <- summary(window(x, 400))
+sum_norm   <- summary(window(x2, 400))
+sum_hyper  <- summary(window(x3, 400))
+sum_ord    <- summary(window(x4, 400))  
+
+extract_summary <- function(summary_obj) {
+  stats <- summary_obj$statistics[, "Mean"]
+  quantiles <- summary_obj$quantiles[, c("2.5%", "97.5%")]
+  out <- cbind(Mean = stats, quantiles)
+  return(round(out, 3))
+}
+
+flat_res   <- extract_summary(sum_flat)
+norm_res   <- extract_summary(sum_norm)
+hyper_res  <- extract_summary(sum_hyper)
+ord_res    <- extract_summary(sum_ord)
+
+compare_df <- cbind(
+  Flat_Mean   = flat_res[, "Mean"],
+  Flat_CI     = paste0("[", flat_res[, "2.5%"], ", ", flat_res[, "97.5%"], "]"),
+  Normal_Mean = norm_res[, "Mean"],
+  Normal_CI   = paste0("[", norm_res[, "2.5%"], ", ", norm_res[, "97.5%"], "]"),
+  Hyper_Mean  = hyper_res[, "Mean"],
+  Hyper_CI    = paste0("[", hyper_res[, "2.5%"], ", ", hyper_res[, "97.5%"], "]"),
+  Hyper_Ordinal_Mean = ord_res[, "Mean"],
+  Hyper_Ordinal_CI   = paste0("[", ord_res[, "2.5%"], ", ", ord_res[, "97.5%"], "]")
+)
+
+compare_df <- data.frame(Coefficient = rownames(flat_res), compare_df, row.names = NULL)
+
+
+knitr::kable(compare_df, caption = "Posterior summaries under all four prior structures")
+
+
+write.csv(compare_df, "posterior_comparison.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+dic_flat      <- dic.samples(m,  n.iter = 10000, type = "pD")
+dic_norm      <- dic.samples(m2, n.iter = 10000, type = "pD")
+dic_hyper     <- dic.samples(m3, n.iter = 10000, type = "pD")
+dic_ordinal   <- dic.samples(m4, n.iter = 10000, type = "pD")
+
+cat("Flat Prior DIC:\n")
+print(dic_flat)
+
+cat("\nNormal Prior DIC:\n")
+print(dic_norm)
+
+cat("\nHierarchical Prior DIC:\n")
+print(dic_hyper)
+
+cat("\nOrdinal Age Trend Prior DIC:\n")
+print(dic_ordinal)
+
+```
+
+
+
+The comparison table reveals important differences in coefficient estimates and uncertainty across the three priors. Under the flat prior, many coefficients (e.g., `beta_1[1]` and `beta_1[2]`) show extreme and implausibly large values with very wide credible intervals, indicating overfitting and unstable estimation. In contrast, the weakly informative normal prior substantially stabilizes the posterior distributions: for example, `beta_2` (effect of `thalach_z`) has a consistent positive effect across all priors with tighter intervals (e.g., Normal: 0.612 [0.281, 0.953]), while `beta_3` (`oldpeak_z`) shows a negative effect (Normal: –0.347 [–0.649, –0.061]), both of which align with clinical expectations. 
+
+The hierarchical prior adds an additional layer of regularization by learning hyperparameters for each group of coefficients. This further narrows the credible intervals slightly (e.g., `beta_4` for `ca`: –1.277 [–1.610, –0.971]) and provides smoother estimates across categorical levels like age groups (`beta_1[*]`). Overall, both the Normal and Hierarchical priors improve stability, but the Hierarchical model best balances shrinkage and interpretability. It is therefore the most appropriate prior structure for modeling heart disease risk in this dataset.
+
+```{r}
+sum_ord <- summary(window(x4, 400))
+
+extract_summary <- function(summary_obj) {
+  stats <- summary_obj$statistics[, "Mean"]
+  quantiles <- summary_obj$quantiles[, c("2.5%", "97.5%")]
+  out <- cbind(Mean = stats, quantiles)
+  return(round(out, 3))
+}
+
+ord_res <- extract_summary(sum_ord)
+
+compare_df <- cbind(
+  Flat_Mean    = flat_res[, "Mean"],
+  Flat_CI      = paste0("[", flat_res[, "2.5%"], ", ", flat_res[, "97.5%"], "]"),
+  Normal_Mean  = norm_res[, "Mean"],
+  Normal_CI    = paste0("[", norm_res[, "2.5%"], ", ", norm_res[, "97.5%"], "]"),
+  Hyper_Mean   = hyper_res[, "Mean"],
+  Hyper_CI     = paste0("[", hyper_res[, "2.5%"], ", ", hyper_res[, "97.5%"], "]"),
+  Ordinal_Mean = ord_res[, "Mean"],
+  Ordinal_CI   = paste0("[", ord_res[, "2.5%"], ", ", ord_res[, "97.5%"], "]")
+)
+
+compare_df <- data.frame(Coefficient = rownames(flat_res), compare_df, row.names = NULL)
+write.csv(compare_df, "posterior_comparison.csv", row.names = FALSE)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readr)
+
+df <- read_csv("posterior_comparison.csv")
+
+selected <- c("beta_2", "beta_3", "beta_4", "beta_6[2]", "beta_7[2]")
+
+extract_ci_bounds <- function(ci_string) {
+  as.numeric(unlist(strsplit(gsub("\\[|\\]", "", ci_string), ", ")))
+}
+
+df_long <- df %>%
+  filter(Coefficient %in% selected) %>%
+  pivot_longer(
+    cols = ends_with("_Mean"),
+    names_to = "Prior",
+    values_to = "Mean"
+  ) %>%
+  mutate(
+    Prior = gsub("_Mean", "", Prior),
+    CI = case_when(
+      Prior == "Flat"   ~ Flat_CI,
+      Prior == "Normal" ~ Normal_CI,
+      Prior == "Hyper"  ~ Hyper_CI,
+      Prior == "Ordinal" ~ Ordinal_CI
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    CI_Low = extract_ci_bounds(CI)[1],
+    CI_High = extract_ci_bounds(CI)[2]
+  ) %>%
+  ungroup()
+
+ggplot(df_long, aes(x = Coefficient, y = Mean, color = Prior)) +
+  geom_point(position = position_dodge(width = 0.6), size = 3) +
+  geom_errorbar(aes(ymin = CI_Low, ymax = CI_High),
+                width = 0.15,
+                position = position_dodge(width = 0.6)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Posterior Estimates Under Different Priors",
+       y = "Posterior Mean ± 95% CI",
+       x = "Coefficient") +
+  theme_minimal()
+
+```
+
+
+```{r}
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+
+df <- read_csv("posterior_comparison.csv", show_col_types = FALSE)
+
+# Coefficients we care about & nice labels
+coef_labels <- c(
+  "beta_2"   = "Max heart rate (thalach_z)",
+  "beta_3"   = "ST depression (oldpeak_z)",
+  "beta_4"   = "Number of vessels (ca)",
+  "beta_6[2]" = "Chest pain: A/B vs baseline",
+  "beta_7[2]" = "Exercise-induced angina (yes)"
+)
+
+selected <- names(coef_labels)
+
+extract_bounds <- function(ci_vec) {
+  bounds <- str_remove_all(ci_vec, "\\[|\\]")           
+  bounds <- str_split(bounds, ",\\s*", simplify = TRUE) 
+  data.frame(
+    low  = as.numeric(bounds[, 1]),
+    high = as.numeric(bounds[, 2])
+  )
+}
+
+normal_ci_bounds <- extract_bounds(df$Normal_CI)
+
+normal_df <- df %>%
+  mutate(
+    CI_Low  = normal_ci_bounds$low,
+    CI_High = normal_ci_bounds$high
+  ) %>%
+  filter(Coefficient %in% selected) %>%
+  transmute(
+    Coefficient = recode(Coefficient, !!!coef_labels),
+    Mean        = Normal_Mean,
+    CI_Low,
+    CI_High
+  )
+
+p <- ggplot(normal_df, aes(x = Coefficient, y = Mean)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_Low, ymax = CI_High), width = 0.15) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_flip() +
+  labs(
+    title = "Posterior Estimates Under Weakly Informative Normal Prior",
+    y = "Posterior Mean ± 95% CI",
+    x = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p)
+
+if (!dir.exists("figures")) dir.create("figures")
+ggsave("figures/posterior_normal.png", plot = p, width = 7, height = 4, dpi = 300)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

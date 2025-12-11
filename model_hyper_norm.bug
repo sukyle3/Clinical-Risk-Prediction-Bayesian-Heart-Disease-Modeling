@@ -1,0 +1,44 @@
+
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+
+  ## ─────────────────────────────────────────────
+  ##   Hyper‑priors
+  ## ─────────────────────────────────────────────
+  mu_0  ~ dnorm(0, 0.25)          
+  tau_0 ~ dgamma(0.01, 0.01)
+  beta_0 ~ dnorm(mu_0, tau_0)
+
+  mu_1  ~ dnorm(0, 0.25)
+  tau_1 ~ dgamma(0.01, 0.01)
+  for (j in 1:7) {                
+    beta_1[j] ~ dnorm(mu_1, tau_1)
+  }
+
+  mu_2  ~ dnorm(0, 0.25);  tau_2 ~ dgamma(0.01,0.01)
+  mu_3  ~ dnorm(0, 0.25);  tau_3 ~ dgamma(0.01,0.01)
+  mu_4  ~ dnorm(0, 0.25);  tau_4 ~ dgamma(0.01,0.01)
+  beta_2 ~ dnorm(mu_2, tau_2)     
+  beta_3 ~ dnorm(mu_3, tau_3)     
+  beta_4 ~ dnorm(mu_4, tau_4)     
+
+  mu_5  ~ dnorm(0, 0.25);  tau_5 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_5[j] ~ dnorm(mu_5, tau_5) }   
+
+  mu_6  ~ dnorm(0, 0.25);  tau_6 ~ dgamma(0.01,0.01)
+  for (j in 1:4)  { beta_6[j] ~ dnorm(mu_6, tau_6) }   
+
+  mu_7  ~ dnorm(0, 0.25);  tau_7 ~ dgamma(0.01,0.01)
+  for (j in 1:2)  { beta_7[j] ~ dnorm(mu_7, tau_7) }   
+}
+

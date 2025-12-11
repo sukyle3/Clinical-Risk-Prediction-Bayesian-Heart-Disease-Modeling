@@ -1,0 +1,31 @@
+
+model {
+  for (i in 1:N) {
+    logit(p[i]) <- beta_0 +
+                   beta_1[age_group_index[i]] +
+                   beta_2 * thalach_z[i] +
+                   beta_3 * oldpeak_z[i] +
+                   beta_4 * ca[i] +
+                   beta_5[sex[i]] +
+                   beta_6[cp[i]] +
+                   beta_7[exang[i]]
+    y[i] ~ dbern(p[i])
+  }
+  beta_0 ~ dnorm(0, 1 / 4)
+  for (j in 1 : 7) {
+    beta_1[j] ~ dnorm(0, 1 / 4)
+  }
+  beta_2 ~ dnorm(0, 1 / 4)
+  beta_3 ~ dnorm(0, 1 / 4)
+  beta_4 ~ dnorm(0, 1 / 4)
+  
+  for (j in 1:2) { 
+    beta_5[j] ~ dnorm(0, 1 / 4)
+  }
+  for (j in 1:4) { 
+    beta_6[j] ~ dnorm(0, 1 / 4)
+  }
+  for (j in 1:2) { 
+    beta_7[j] ~ dnorm(0, 1 / 4)
+  }
+}
