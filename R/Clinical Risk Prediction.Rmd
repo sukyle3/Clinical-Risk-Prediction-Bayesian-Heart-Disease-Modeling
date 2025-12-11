@@ -628,7 +628,7 @@ compare_df <- cbind(
 )
 
 compare_df <- data.frame(Coefficient = rownames(flat_res), compare_df, row.names = NULL)
-write.csv(compare_df, "posterior_comparison.csv", row.names = FALSE)
+write.csv(compare_df, "results/posterior_comparison.csv", row.names = FALSE)
 
 library(ggplot2)
 library(dplyr)
