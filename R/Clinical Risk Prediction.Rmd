@@ -14,7 +14,7 @@ library(dplyr)
 library(readr)
 library(janitor)
 
-raw <- read_csv("STAT 448/heart 2.csv", na = c("", "NA", "?"), col_types = cols())
+raw <- read_csv("data/heart_raw.csv", na = c("", "NA", "?"), col_types = cols())
 dim(raw)   
 raw
 ```
@@ -62,8 +62,8 @@ str(heart_subset)
 ```
 
 ```{r}
-write_csv(heart_clean,  "heart_clean.csv")
-write_csv(heart_subset, "heart_subset.csv")
+write_csv(heart_clean,  "data/heart_clean.csv")
+write_csv(heart_subset, "data/heart_subset.csv")
 "Files saved: heart_clean.csv (full set), heart_subset.csv (trimmed set)"
 ```
 
@@ -141,7 +141,7 @@ library(readr)
 library(dplyr)   
 library(MASS)   
 
-heart_subset <- read_csv("heart_subset.csv", show_col_types = FALSE) |>
+heart_subset <- read_csv("data/heart_subset.csv", show_col_types = FALSE) |>
   mutate(across(c(sex, cp, exang, thal), factor),
          target = factor(target, levels = c("absent", "present")))
 
@@ -265,11 +265,11 @@ model {
     beta_7[j] ~ dunif(-1e6, 1e6) 
   }
 }"
-writeLines(Model, "model_flat.bug")
+writeLines(Model, "models/model_flat.bug")
 ```
 After we have constructed the appropriate model, we can then analyze the data:
 ```{r}
-m <- jags.model("model_flat.bug", data_jags, n.chains = 3)
+m  <- jags.model("models/model_flat.bug", data_jags, n.chains = 3)
 
 update(m, 1000)
 x <- coda.samples(m, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
@@ -310,11 +310,11 @@ model {
     beta_7[j] ~ dnorm(0, 1 / 4)
   }
 }"
-writeLines(Model, "model_norm.bug")
+writeLines(Model, "models/model_norm.bug")
 ```
 After building the model, we can then analyze the data:
 ```{r}
-m2 <- jags.model("model_norm.bug", data_jags, n.chains = 3)
+m2 <- jags.model("models/model_norm.bug", data_jags, n.chains = 3)
 
 update(m2, 1000)
 x2 <- coda.samples(m2, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
@@ -366,10 +366,10 @@ model {
   for (j in 1:2)  { beta_7[j] ~ dnorm(mu_7, tau_7) }   
 }
 "
-writeLines(Model, "model_hyper_norm.bug")
+writeLines(Model, "models/model_hyper_norm.bug")
 
 
-m3 <- jags.model("model_hyper_norm.bug", data_jags, n.chains = 3)
+m3 <- jags.model("models/model_hyper_norm.bug",  data_jags, n.chains = 3)
 update(m3, 1000)
 x3 <- coda.samples(m3, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
 summary(window(x3, 400))
@@ -421,11 +421,10 @@ model {
   for (j in 1:2)  { beta_7[j] ~ dnorm(mu_7, tau_7) }   
 }
 "
-writeLines(Model, "model_hyper_norm_ord.bug")
+writeLines(Model, "models/model_hyper_norm_ord.bug")
 
 
-
-m4 <- jags.model("model_hyper_norm_ord.bug", data_jags, n.chains = 3)
+m4 <- jags.model("models/model_hyper_norm_ord.bug", data_jags, n.chains = 3)
 update(m4, 1000)
 x4 <- coda.samples(m4, variable.names = c("beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "beta_5", "beta_6", "beta_7"), n.iter = 5000)
 summary(window(x4, 400))
@@ -574,7 +573,7 @@ compare_df <- data.frame(Coefficient = rownames(flat_res), compare_df, row.names
 knitr::kable(compare_df, caption = "Posterior summaries under all four prior structures")
 
 
-write.csv(compare_df, "posterior_comparison.csv", row.names = FALSE)
+write.csv(compare_df, "results/posterior_comparison.csv", row.names = FALSE)
 
 ```
 
@@ -636,7 +635,7 @@ library(dplyr)
 library(tidyr)
 library(readr)
 
-df <- read_csv("posterior_comparison.csv")
+df <- read_csv("results/posterior_comparison.csv")
 
 selected <- c("beta_2", "beta_3", "beta_4", "beta_6[2]", "beta_7[2]")
 
@@ -688,7 +687,7 @@ library(dplyr)
 library(ggplot2)
 library(stringr)
 
-df <- read_csv("posterior_comparison.csv", show_col_types = FALSE)
+df <- read_csv("results/posterior_comparison.csv", show_col_types = FALSE)
 
 # Coefficients we care about & nice labels
 coef_labels <- c(
